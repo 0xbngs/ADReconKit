@@ -16,6 +16,8 @@ beacon> adrecon_asrep 192.168.56.11 north.sevenkingdoms.local
 
 Built for authorized red team training (GOAD / sevenkingdoms lab style).
 
+**Demo:** [Watch the walkthrough on YouTube](https://www.youtube.com/watch?v=wUZYKbEgo1M)
+
 ## MITRE ATT&CK
 
 | ID | Technique | Command |
@@ -90,6 +92,10 @@ adrecon_sites      192.168.56.10 sevenkingdoms.local
 adrecon_all        192.168.56.11 north.sevenkingdoms.local
 ```
 
+`help` after the script is loaded:
+
+![ADReconKit beacon commands](./perintah%20Help%20-%20dan%20ada%20gambar%20perintah%20dari%20ADRECONKIT.jpg)
+
 `adrecon_esc1` and `adrecon_sites` query the Configuration NC (forest). In GOAD that is usually `192.168.56.10` / `sevenkingdoms.local`.
 
 ---
@@ -130,6 +136,8 @@ LDAP://192.168.56.11/DC=north,DC=sevenkingdoms,DC=local
 
 Each printed `sAMAccountName` is an AS-REP roast candidate.
 
+![AS-REP Roasting in Cobalt Strike](./As-Rep%20Roasting.png)
+
 ---
 
 ## 2. `adrecon_kerberoast` — Kerberoasting
@@ -154,6 +162,8 @@ adrecon_kerberoast 192.168.56.11 north.sevenkingdoms.local
 [+]    SPN: MSSQLSvc/castelnoir.north.sevenkingdoms.local:1433
 [*] Total: 1 object(s)
 ```
+
+![Kerberoasting in Cobalt Strike](./Kerberoasting.jpg)
 
 ---
 
@@ -287,6 +297,8 @@ adrecon_esc1 192.168.56.10 sevenkingdoms.local
 ```
 
 In the sevenkingdoms lab the custom `ESC1` template is the intended finding. Built-in templates such as `CA` / `SubCA` / `CrossCA` also match the SAN + empty-EKU rule.
+
+![ESC1 template marked LIKELY VULNERABLE](./ESC1.jpeg)
 
 ---
 
@@ -605,6 +617,7 @@ Load **`adrecon.cna`** only. The C BOF files are leftover from the in-process at
 
 ## References
 
+- [YouTube walkthrough](https://www.youtube.com/watch?v=wUZYKbEgo1M)
 - [MITRE ATT&CK T1558](https://attack.mitre.org/techniques/T1558/)
 - [Outflank — AD recon with ADSI](https://www.outflank.nl/blog/2019/10/20/red-team-tactics-active-directory-recon-using-adsi-and-reflective-dlls/)
 - [SpecterOps Certified Pre-Owned (ADCS)](https://posts.specterops.io/certified-pre-owned-d95910965cd2)
